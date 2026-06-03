@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.8
+// @version      0.2.9
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
@@ -17,7 +17,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.8";
+  const SCRIPT_VERSION = "0.2.9";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -450,7 +450,8 @@
   }
 
   function isScoredActivityText(text) {
-    return /得分\s*[:：]\s*\d+/.test(clean(text));
+    const normalized = clean(text);
+    return /得分\s*[:：]?\s*\d+/.test(normalized) || /\d+\s*得分/.test(normalized);
   }
 
   function isExerciseActivityText(text) {
@@ -480,6 +481,7 @@
     el.scrollIntoView({ block: "center", inline: "center" });
     const eventWindow = el.ownerDocument?.defaultView || window;
     const MouseEventCtor = eventWindow.MouseEvent || MouseEvent;
+    let dispatched = false;
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
       try {
         el.dispatchEvent(new MouseEventCtor(type, {
@@ -487,21 +489,28 @@
           cancelable: true,
           view: eventWindow,
         }));
+        dispatched = true;
       } catch {
-        el.dispatchEvent(new MouseEventCtor(type, {
-          bubbles: true,
-          cancelable: true,
-        }));
+        try {
+          el.dispatchEvent(new MouseEventCtor(type, {
+            bubbles: true,
+            cancelable: true,
+          }));
+          dispatched = true;
+        } catch {
+          // Try the next event type, then fall back to native click if needed.
+        }
       }
     }
-    if (typeof el.click === "function") {
+    if (!dispatched && typeof el.click === "function") {
       try {
         el.click();
+        return true;
       } catch {
         // Synthetic mouse events above are the primary path.
       }
     }
-    return true;
+    return dispatched;
   }
 
   function createPanel() {
@@ -698,7 +707,15 @@
 
     controls.append(
       makeButton("开始", "#16a34a", () => {
-        saveState({ running: true });
+        saveState({
+          running: true,
+          runLock: null,
+          returningFromCards: null,
+          detailIdle: null,
+          listLoading: null,
+          studentLogLoading: null,
+          refreshRecovery: {},
+        });
         setStatus("已开始。");
         void tick();
       }),
@@ -1380,14 +1397,24 @@
   async function tick() {
     if (busy || !isRunning()) return;
 
-    if (
-      window.top === window &&
-      location.pathname.includes("/studentLog/") &&
-      hasVisibleStudyContentIframe()
-    ) {
-      clearStudentLogLoadingRecovery();
-      const status = loadState().status;
-      if (panelStatus && status) panelStatus.textContent = status;
+    if (window.top === window && location.pathname.includes("/studentLog/")) {
+      if (hasVisibleStudyContentIframe()) {
+        clearStudentLogLoadingRecovery();
+        const status = loadState().status;
+        if (panelStatus && status) panelStatus.textContent = status;
+        return;
+      }
+
+      busy = true;
+      try {
+        if (await ensureStudyContentTab()) return;
+      } catch (error) {
+        saveState({ running: false });
+        setStatus(`出错并暂停：${error?.message || error}`);
+        console.error(error);
+      } finally {
+        busy = false;
+      }
       return;
     }
 
