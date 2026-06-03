@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.13
+// @version      0.2.14
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @exclude      https://www.yuketang.cn/ai-workspace/*
@@ -18,7 +18,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.13";
+  const SCRIPT_VERSION = "0.2.14";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -789,6 +789,8 @@
           listLoading: null,
           studentLogLoading: null,
           refreshRecovery: {},
+          handledActivities: [],
+          deferredActivities: [],
         });
         setStatus("已开始。");
         void tick();
@@ -1403,7 +1405,25 @@
     return handledActivities().has(title) || deferredActivities().has(title);
   }
 
+  function unfinishedActivityRows() {
+    return [...document.querySelectorAll(".leaf-detail")]
+      .filter(isVisible)
+      .filter((row) => {
+        const rowText = textOf(row);
+        return rowText.includes("请在") &&
+          rowText.includes("完成学习") &&
+          /(未开始|进行中\s*\(\s*\d+\s*\/\s*\d+\s*\))/.test(rowText) &&
+          titleFromRowText(rowText) &&
+          !shouldSkipActivityText(rowText);
+      });
+  }
+
   function findNextActivityRow() {
+    for (const row of unfinishedActivityRows()) {
+      if (shouldSkipHandledRow(row)) continue;
+      return row;
+    }
+
     const statuses = [...document.querySelectorAll(".item")]
       .filter(isVisible)
       .filter((el) => /^(未开始|进行中\s*\(\s*\d+\s*\/\s*\d+\s*\))$/.test(textOf(el)));
@@ -1435,6 +1455,18 @@
 
       clearListLoadingRecovery();
       saveState({ returningFromCards: null, detailIdle: null });
+      const unfinishedRows = unfinishedActivityRows()
+        .filter((candidate) => !shouldSkipHandledRow(candidate));
+      if (unfinishedRows.length) {
+        const titles = unfinishedRows
+          .slice(0, 5)
+          .map((candidate) => titleFromRow(candidate))
+          .join("；");
+        saveState({ running: false });
+        setStatus(`仍检测到 ${unfinishedRows.length} 个未完成 PPT，但未能定位可打开行，已暂停：${titles}`);
+        return true;
+      }
+
       saveState({ running: false });
       const skippedCount = [...document.querySelectorAll(".leaf-detail")]
         .filter(isVisible)
