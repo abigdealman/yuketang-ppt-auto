@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.1
+// @version      0.2.2
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
@@ -33,6 +33,7 @@
     listLoadStuckRefreshMs: 30000,
     listLoadRefreshMax: 2,
     refreshDelayMs: 600,
+    maxSameProgressOpenAttempts: 3,
   };
 
   let busy = false;
@@ -129,17 +130,25 @@
     return new Set((loadState().handledActivities || []).map(activityKey));
   }
 
+  function deferredActivities() {
+    return new Set((loadState().deferredActivities || []).map(activityKey));
+  }
+
   function currentActivityTitle() {
     const bodyText = textOf(document.body);
     const match = bodyText.match(/返回\s+(.+?)\s+发布时间\s*[:：]/);
     return activityKey(match?.[1] || loadState().lastActivity || "");
   }
 
-  function markActivityHandled(reason) {
+  function markActivityHandled(reason, options = {}) {
     const title = currentActivityTitle();
     if (!title) return false;
     const next = [...handledActivities(), title];
-    saveState({ handledActivities: next, lastHandledReason: reason });
+    const patch = { handledActivities: next, lastHandledReason: reason };
+    if (options.defer) {
+      patch.deferredActivities = [...deferredActivities(), title];
+    }
+    saveState(patch);
     setStatus(`${title} 本轮已处理${reason ? `：${reason}` : ""}，返回列表。`);
     return true;
   }
@@ -582,6 +591,11 @@
     return [...skippedUnreadPages].some((key) => key.startsWith(prefix));
   }
 
+  function skippedPageCountInCurrentActivity() {
+    const prefix = `${location.pathname}:`;
+    return [...skippedUnreadPages].filter((key) => key.startsWith(prefix)).length;
+  }
+
   function activeSlideText() {
     const root = getReaderRoot() || document;
     const slides = [...root.querySelectorAll(".swiper-slide-active")]
@@ -630,23 +644,25 @@
         return true;
       }
 
-      if (progress.done < progress.total && hasSkippedPageInCurrentActivity()) {
+      const remainingPages = Math.max(0, progress.total - progress.done);
+      const skippedPages = skippedPageCountInCurrentActivity();
+      if (progress.done < progress.total && hasSkippedPageInCurrentActivity() && remainingPages <= skippedPages) {
         clearRefreshRecovery(`reader-empty:${location.pathname}`);
-        markActivityHandled(`剩余为已跳过题目页 (${progress.raw})`);
+        markActivityHandled(`剩余 ${remainingPages} 页为已跳过题目页 (${progress.raw})`, { defer: true });
         await leaveCardsPage();
         return true;
       }
 
       if (requestAutoRefresh(
         `reader-empty:${location.pathname}`,
-        `阅读器未发现可读未读页，但进度仍为 ${progress.raw}`,
+        `阅读器未发现可读未读页，但进度仍为 ${progress.raw}，已跳过题目页 ${skippedPages} 个`,
         CONFIG.readerEmptyRefreshMax,
       )) {
         return true;
       }
 
       saveState({ running: false });
-      setStatus(`未发现可阅读的未读页，但进度仍为 ${progress.raw}，已暂停，避免误判结束。`);
+      setStatus(`未发现可阅读的未读页，但进度仍为 ${progress.raw}，剩余 ${remainingPages} 页大于已跳过题目页 ${skippedPages} 个，已暂停，避免误判结束。`);
       return true;
     }
 
@@ -718,7 +734,7 @@
     if (location.pathname.includes("/studentCards/")) {
       const bodyText = textOf(document.body);
       if (shouldSkipActivityText(bodyText)) {
-        if (!markActivityHandled("练习/测验或已有得分，跳过")) {
+        if (!markActivityHandled("练习/测验或已有得分，跳过", { defer: true })) {
           setStatus("检测到练习/测验或已有得分，返回列表。");
         }
         await leaveCardsPage();
@@ -744,7 +760,7 @@
         await leaveCardsPage();
         return true;
       }
-      if (!markActivityHandled("非 PPT 或无课件入口，跳过")) {
+      if (!markActivityHandled("非 PPT 或无课件入口，跳过", { defer: true })) {
         setStatus("未找到“查看课件”，可能不是 PPT，返回列表。");
       }
       await leaveCardsPage();
@@ -909,6 +925,35 @@
     return titleFromRowText(row.innerText || "") || clean(row.innerText).slice(0, 60);
   }
 
+  function rowProgressFromText(text) {
+    const match = clean(text).match(/进行中\s*\(\s*(\d+)\s*\/\s*(\d+)\s*\)/);
+    if (!match) return null;
+    const done = Number(match[1]);
+    const total = Number(match[2]);
+    return {
+      done,
+      total,
+      remaining: Math.max(0, total - done),
+      raw: `${done}/${total}`,
+    };
+  }
+
+  function shouldSkipHandledRow(row) {
+    const title = activityKey(titleFromRow(row));
+    return deferredActivities().has(title);
+  }
+
+  function rememberOpenAttempt(title, statusText) {
+    const state = loadState();
+    const history = { ...(state.openingHistory || {}) };
+    const key = activityKey(title);
+    const previous = history[key] || {};
+    const attempts = previous.statusText === statusText ? Number(previous.attempts || 0) + 1 : 1;
+    history[key] = { statusText, attempts, lastAt: Date.now() };
+    saveState({ openingHistory: history });
+    return attempts;
+  }
+
   function findNextActivityRow() {
     const statuses = [...document.querySelectorAll(".item")]
       .filter(isVisible)
@@ -919,7 +964,7 @@
       if (!row) continue;
       const rowText = textOf(row);
       if (shouldSkipActivityText(rowText)) continue;
-      if (handledActivities().has(activityKey(titleFromRow(row)))) continue;
+      if (shouldSkipHandledRow(row)) continue;
       return row;
     }
     return null;
@@ -951,6 +996,14 @@
     clearListLoadingRecovery();
     saveState({ returningFromCards: null });
     const title = titleFromRow(row);
+    const statusText = textOf(row.querySelector(".item")) || rowProgressFromText(textOf(row))?.raw || textOf(row).slice(-40);
+    const attempts = rememberOpenAttempt(title, statusText);
+    if (attempts > CONFIG.maxSameProgressOpenAttempts) {
+      saveState({ running: false });
+      setStatus(`${title} 多次打开后列表进度仍为 ${statusText}，已暂停，避免死循环。`);
+      return true;
+    }
+
     saveState({ lastActivity: title });
     setStatus(`打开活动：${title}`);
     fireClick(row);
