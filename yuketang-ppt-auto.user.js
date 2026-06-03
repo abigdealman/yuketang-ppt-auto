@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.11
+// @version      0.2.12
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @exclude      https://www.yuketang.cn/ai-workspace/*
@@ -18,7 +18,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.11";
+  const SCRIPT_VERSION = "0.2.12";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -543,7 +543,10 @@
   }
 
   function createPanel() {
-    if (window.top !== window || document.getElementById("codex-ykt-ppt-panel")) return;
+    if (window.top !== window) return;
+
+    document.getElementById("codex-ykt-ppt-panel")?.remove();
+    document.getElementById("codex-ykt-ppt-ball")?.remove();
 
     const defaultPanelWidth = 260;
     const defaultPanelHeight = 172;
@@ -647,6 +650,7 @@
 
     const panel = document.createElement("div");
     panel.id = "codex-ykt-ppt-panel";
+    panel.dataset.scriptVersion = SCRIPT_VERSION;
     panel.style.cssText = [
       "position:fixed",
       "left:0",
@@ -769,6 +773,7 @@
 
     const ball = document.createElement("button");
     ball.id = "codex-ykt-ppt-ball";
+    ball.dataset.scriptVersion = SCRIPT_VERSION;
     ball.textContent = "雨";
     ball.title = "雨课堂 PPT 自动阅读";
     ball.style.cssText = [
