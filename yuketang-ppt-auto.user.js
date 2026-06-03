@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.1.9
+// @version      0.2.0
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @run-at       document-idle
@@ -23,6 +23,14 @@
     questionGapMs: 650,
     openCoursewareWaitMs: 4500,
     returnWaitMs: 3500,
+    readFailRefreshMax: 2,
+    readerEmptyRefreshMax: 1,
+    returnStuckRefreshMs: 30000,
+    returnRetryClickMs: 10000,
+    returnRefreshMax: 3,
+    listLoadStuckRefreshMs: 30000,
+    listLoadRefreshMax: 2,
+    refreshDelayMs: 600,
   };
 
   let busy = false;
@@ -73,6 +81,42 @@
 
   function isRunning() {
     return loadState().running === true;
+  }
+
+  function refreshPage(reason) {
+    saveState({ lastRefreshAt: Date.now(), lastRefreshReason: reason });
+    setStatus(`${reason}，自动刷新页面恢复。`);
+    window.setTimeout(() => {
+      try {
+        if (window.top && window.top !== window) {
+          window.top.location.reload();
+        } else {
+          location.reload();
+        }
+      } catch {
+        location.reload();
+      }
+    }, CONFIG.refreshDelayMs);
+  }
+
+  function requestAutoRefresh(key, reason, maxAttempts) {
+    const state = loadState();
+    const recovery = { ...(state.refreshRecovery || {}) };
+    const entry = recovery[key] || { attempts: 0 };
+    if (entry.attempts >= maxAttempts) return false;
+
+    const attempts = entry.attempts + 1;
+    recovery[key] = { attempts, lastAt: Date.now(), reason };
+    saveState({ refreshRecovery: recovery });
+    refreshPage(`${reason}（第 ${attempts}/${maxAttempts} 次）`);
+    return true;
+  }
+
+  function clearRefreshRecovery(key) {
+    const recovery = { ...(loadState().refreshRecovery || {}) };
+    if (!(key in recovery)) return;
+    delete recovery[key];
+    saveState({ refreshRecovery: recovery });
   }
 
   function activityKey(title) {
@@ -571,6 +615,7 @@
     const progress = getReaderProgress();
     const unreadFlags = getUnreadFlags();
     if (progress && progress.done >= progress.total) {
+      clearRefreshRecovery(`reader-empty:${location.pathname}`);
       markActivityHandled(progress ? `已完成 (${progress.raw})` : "已完成");
       await leaveCardsPage();
       return true;
@@ -584,8 +629,17 @@
       }
 
       if (progress.done < progress.total && hasSkippedPageInCurrentActivity()) {
+        clearRefreshRecovery(`reader-empty:${location.pathname}`);
         markActivityHandled(`剩余为已跳过题目页 (${progress.raw})`);
         await leaveCardsPage();
+        return true;
+      }
+
+      if (requestAutoRefresh(
+        `reader-empty:${location.pathname}`,
+        `阅读器未发现可读未读页，但进度仍为 ${progress.raw}`,
+        CONFIG.readerEmptyRefreshMax,
+      )) {
         return true;
       }
 
@@ -599,6 +653,7 @@
     const clickTarget = flag.closest(".container") || flag.closest(".swiper-slide") || flag;
     const beforeUnreadCount = unreadFlags.length;
     const beforeProgress = progress;
+    const readRecoveryKey = `read:${slideKeyFromFlag(flag)}`;
 
     setStatus(`阅读 ${label}，剩余未读 ${beforeUnreadCount} 页。`);
     fireClick(clickTarget);
@@ -606,6 +661,7 @@
 
     if (isQuestionPageOpen()) {
       skippedUnreadPages.add(slideKeyFromFlag(flag));
+      clearRefreshRecovery(readRecoveryKey);
       setStatus(`${label} 是习题页，按要求跳过。`);
       await sleep(CONFIG.questionGapMs);
       queueTick();
@@ -622,14 +678,23 @@
     if (!ok) {
       if (isQuestionPageOpen()) {
         skippedUnreadPages.add(slideKeyFromFlag(flag));
+        clearRefreshRecovery(readRecoveryKey);
         setStatus(`${label} 仍未变已读，但识别为习题页，跳过。`);
       } else {
+        if (requestAutoRefresh(
+          readRecoveryKey,
+          `${label} 长时间未转为已读，可能是网络卡住`,
+          CONFIG.readFailRefreshMax,
+        )) {
+          return true;
+        }
         saveState({ running: false });
-        setStatus(`${label} 仍未变已读，已暂停，避免跳过普通未读页。`);
+        setStatus(`${label} 刷新重试后仍未变已读，已暂停，避免跳过普通未读页。`);
       }
       return true;
     }
 
+    clearRefreshRecovery(readRecoveryKey);
     const after = getReaderProgress();
     setStatus(`${label} 已确认${after ? `，进度 ${after.raw}` : ""}。`);
     await sleep(CONFIG.pageGapMs);
@@ -687,7 +752,113 @@
     return false;
   }
 
+  function isStudyContentLocation() {
+    return location.pathname.includes("/studentLog/") || location.pathname.includes("/studycontent");
+  }
+
+  function clearReturnRecoveryIfArrived() {
+    if (!loadState().returningFromCards || !isStudyContentLocation()) return;
+    saveState({ returningFromCards: null });
+  }
+
+  function beginReturnRecovery() {
+    const nowMs = Date.now();
+    const current = loadState().returningFromCards;
+    const samePage = current?.fromUrl === location.href;
+    saveState({
+      returningFromCards: {
+        fromUrl: location.href,
+        startedAt: samePage ? current.startedAt || nowMs : nowMs,
+        refreshes: samePage ? current.refreshes || 0 : 0,
+        lastClickAt: nowMs,
+      },
+    });
+  }
+
+  async function handleReturnRecovery() {
+    const returning = loadState().returningFromCards;
+    if (!returning) return false;
+
+    if (isStudyContentLocation()) {
+      saveState({ returningFromCards: null });
+      return false;
+    }
+
+    if (!location.pathname.includes("/studentCards/")) return false;
+
+    const nowMs = Date.now();
+    const elapsed = nowMs - (returning.startedAt || nowMs);
+    if (elapsed >= CONFIG.returnStuckRefreshMs) {
+      const refreshes = Number(returning.refreshes || 0);
+      if (refreshes >= CONFIG.returnRefreshMax) {
+        saveState({ running: false, returningFromCards: null });
+        setStatus("返回学习内容多次自动刷新仍失败，已暂停，请手动刷新或返回列表。");
+        return true;
+      }
+
+      saveState({
+        returningFromCards: {
+          ...returning,
+          startedAt: nowMs,
+          refreshes: refreshes + 1,
+          lastClickAt: 0,
+        },
+      });
+      refreshPage(`返回学习内容卡住超过 ${Math.round(CONFIG.returnStuckRefreshMs / 1000)} 秒`);
+      return true;
+    }
+
+    if (nowMs - Number(returning.lastClickAt || 0) >= CONFIG.returnRetryClickMs) {
+      setStatus("返回学习内容未完成，重试返回。");
+      await leaveCardsPage();
+      return true;
+    }
+
+    setStatus(`正在返回学习内容，已等待 ${Math.ceil(elapsed / 1000)} 秒。`);
+    await sleep(1500);
+    return true;
+  }
+
+  function clearListLoadingRecovery() {
+    if (loadState().listLoading) {
+      saveState({ listLoading: null });
+    }
+  }
+
+  async function waitForStudyContentListLoading() {
+    const nowMs = Date.now();
+    const current = loadState().listLoading || { startedAt: nowMs, refreshes: 0 };
+    if (!loadState().listLoading) {
+      saveState({ listLoading: current });
+    }
+
+    const elapsed = nowMs - (current.startedAt || nowMs);
+    if (elapsed >= CONFIG.listLoadStuckRefreshMs) {
+      const refreshes = Number(current.refreshes || 0);
+      if (refreshes >= CONFIG.listLoadRefreshMax) {
+        saveState({ running: false, listLoading: null });
+        setStatus("学习内容列表多次自动刷新仍未加载，已暂停，请手动刷新页面。");
+        return true;
+      }
+
+      saveState({
+        listLoading: {
+          startedAt: nowMs,
+          refreshes: refreshes + 1,
+        },
+      });
+      refreshPage(`学习内容列表加载卡住超过 ${Math.round(CONFIG.listLoadStuckRefreshMs / 1000)} 秒`);
+      return true;
+    }
+
+    setStatus(`等待学习内容列表加载，已等待 ${Math.ceil(elapsed / 1000)} 秒。`);
+    await sleep(2500);
+    return true;
+  }
+
   async function leaveCardsPage() {
+    beginReturnRecovery();
+
     const dialogClose = document.querySelector(".basePPTDialog .el-dialog__headerbtn");
     if (dialogClose) {
       fireClick(dialogClose);
@@ -762,11 +933,11 @@
     if (!row) {
       const bodyText = textOf(document.body);
       if (!allItems.length || /正在加载/.test(bodyText)) {
-        setStatus("等待学习内容列表加载。");
-        await sleep(2500);
-        return true;
+        return waitForStudyContentListLoading();
       }
 
+      clearListLoadingRecovery();
+      saveState({ returningFromCards: null });
       saveState({ running: false });
       const skippedCount = [...document.querySelectorAll(".leaf-detail")]
         .filter(isVisible)
@@ -775,6 +946,8 @@
       return true;
     }
 
+    clearListLoadingRecovery();
+    saveState({ returningFromCards: null });
     const title = titleFromRow(row);
     saveState({ lastActivity: title });
     setStatus(`打开活动：${title}`);
@@ -801,9 +974,13 @@
     busy = true;
 
     try {
+      clearReturnRecoveryIfArrived();
+
       if (window.top !== window && !location.pathname.includes("/studycontent")) {
         return;
       }
+
+      if (await handleReturnRecovery()) return;
 
       if (getReaderRoot()) {
         if (await processReader()) return;
