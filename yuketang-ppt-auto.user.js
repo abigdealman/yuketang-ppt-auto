@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.14
+// @version      0.2.15
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @exclude      https://www.yuketang.cn/ai-workspace/*
@@ -18,7 +18,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.14";
+  const SCRIPT_VERSION = "0.2.15";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -531,8 +531,7 @@
   function shouldSkipActivityText(text) {
     const normalized = clean(text);
     return isScoredActivityText(normalized) ||
-      isExerciseActivityText(normalized) ||
-      /考核截止时间.*已过/.test(normalized);
+      isExerciseActivityText(normalized);
   }
 
   function findTextElement(text, options = {}) {
@@ -1360,9 +1359,7 @@
       const text = textOf(node);
       const title = titleFromRowText(text);
       if (
-        text.includes("请在") &&
-        text.includes("完成学习") &&
-        /(未开始|进行中\s*\(\s*\d+\s*\/\s*\d+\s*\))/.test(text) &&
+        hasUnfinishedStatus(text) &&
         text.length < 500 &&
         title
       ) {
@@ -1400,6 +1397,10 @@
     };
   }
 
+  function hasUnfinishedStatus(text) {
+    return /(未开始|进行中\s*\(\s*\d+\s*\/\s*\d+\s*\))/.test(clean(text));
+  }
+
   function shouldSkipHandledRow(row) {
     const title = activityKey(titleFromRow(row));
     return handledActivities().has(title) || deferredActivities().has(title);
@@ -1410,9 +1411,7 @@
       .filter(isVisible)
       .filter((row) => {
         const rowText = textOf(row);
-        return rowText.includes("请在") &&
-          rowText.includes("完成学习") &&
-          /(未开始|进行中\s*\(\s*\d+\s*\/\s*\d+\s*\))/.test(rowText) &&
+        return hasUnfinishedStatus(rowText) &&
           titleFromRowText(rowText) &&
           !shouldSkipActivityText(rowText);
       });
@@ -1426,7 +1425,7 @@
 
     const statuses = [...document.querySelectorAll(".item")]
       .filter(isVisible)
-      .filter((el) => /^(未开始|进行中\s*\(\s*\d+\s*\/\s*\d+\s*\))$/.test(textOf(el)));
+      .filter((el) => hasUnfinishedStatus(textOf(el)));
 
     for (const status of statuses) {
       const row = activityRowFromStatus(status);
