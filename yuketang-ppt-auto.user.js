@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.6
+// @version      0.2.7
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
@@ -17,7 +17,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.6";
+  const SCRIPT_VERSION = "0.2.7";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -478,12 +478,28 @@
   function fireClick(el) {
     if (!el) return false;
     el.scrollIntoView({ block: "center", inline: "center" });
+    const eventWindow = el.ownerDocument?.defaultView || window;
+    const MouseEventCtor = eventWindow.MouseEvent || MouseEvent;
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
-      el.dispatchEvent(new MouseEvent(type, {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-      }));
+      try {
+        el.dispatchEvent(new MouseEventCtor(type, {
+          bubbles: true,
+          cancelable: true,
+          view: eventWindow,
+        }));
+      } catch {
+        el.dispatchEvent(new MouseEventCtor(type, {
+          bubbles: true,
+          cancelable: true,
+        }));
+      }
+    }
+    if (typeof el.click === "function") {
+      try {
+        el.click();
+      } catch {
+        // Synthetic mouse events above are the primary path.
+      }
     }
     return true;
   }
