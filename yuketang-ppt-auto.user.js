@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.3
+// @version      0.2.5
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
 // @downloadURL  https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
 // @run-at       document-idle
-// @grant        none
+// @connect      gh-proxy.com
+// @connect      raw.githubusercontent.com
+// @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
 (function () {
@@ -15,8 +17,12 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
+  const SCRIPT_VERSION = "0.2.5";
+  const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
+    updateCheckIntervalMs: 5 * 60 * 1000,
+    updateSnoozeMs: 10 * 60 * 1000,
     pageConfirmTimeoutMs: 25000,
     pageExtraWaitMs: 10000,
     clickSettleMs: 450,
@@ -32,6 +38,8 @@
     returnRefreshMax: 3,
     listLoadStuckRefreshMs: 30000,
     listLoadRefreshMax: 2,
+    studentLogStuckRefreshMs: 30000,
+    studentLogRefreshMax: 2,
     refreshDelayMs: 600,
     detailIdleRefreshMs: 30000,
     detailIdleRefreshMax: 2,
@@ -40,6 +48,7 @@
 
   let busy = false;
   let panelStatus;
+  let updateCheckBusy = false;
   let detailWaitKey = "";
   let detailWaitCount = 0;
   const INSTANCE_ID = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
@@ -178,6 +187,199 @@
     saveState({ status: message });
     if (panelStatus) panelStatus.textContent = message;
     console.log("[YKT PPT Auto]", message);
+  }
+
+  function versionParts(version) {
+    return String(version || "")
+      .split(/[^\d]+/)
+      .filter(Boolean)
+      .map((part) => Number(part) || 0);
+  }
+
+  function compareVersions(left, right) {
+    const a = versionParts(left);
+    const b = versionParts(right);
+    const maxLength = Math.max(a.length, b.length);
+    for (let i = 0; i < maxLength; i += 1) {
+      const diff = (a[i] || 0) - (b[i] || 0);
+      if (diff !== 0) return diff;
+    }
+    return 0;
+  }
+
+  function parseScriptVersion(source) {
+    const match = String(source || "").match(/^\s*\/\/\s*@version\s+([^\s]+)/m);
+    return match ? match[1].trim() : "";
+  }
+
+  function cacheBustedUrl(url) {
+    return `${url}${url.includes("?") ? "&" : "?"}_ykt_update=${Date.now()}`;
+  }
+
+  function requestText(url) {
+    return new Promise((resolve, reject) => {
+      const finalUrl = cacheBustedUrl(url);
+      if (typeof GM_xmlhttpRequest === "function") {
+        GM_xmlhttpRequest({
+          method: "GET",
+          url: finalUrl,
+          timeout: 15000,
+          onload: (response) => {
+            if (response.status >= 200 && response.status < 300) {
+              resolve(response.responseText || "");
+              return;
+            }
+            reject(new Error(`HTTP ${response.status}`));
+          },
+          onerror: () => reject(new Error("网络请求失败")),
+          ontimeout: () => reject(new Error("更新检查超时")),
+        });
+        return;
+      }
+
+      fetch(finalUrl, { cache: "no-store" })
+        .then((response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.text();
+        })
+        .then(resolve, reject);
+    });
+  }
+
+  function hideUpdateNotice() {
+    document.getElementById("codex-ykt-update-notice")?.remove();
+  }
+
+  function showUpdateNotice(version, options = {}) {
+    if (window.top !== window) return;
+    const state = loadState();
+    const snoozeUntil = Number(state.updateSnoozeUntil || 0);
+    if (
+      !options.force &&
+      state.availableUpdateVersion === version &&
+      snoozeUntil > Date.now()
+    ) {
+      return;
+    }
+
+    hideUpdateNotice();
+    const notice = document.createElement("div");
+    notice.id = "codex-ykt-update-notice";
+    notice.style.cssText = [
+      "position:fixed",
+      "right:16px",
+      "top:16px",
+      "z-index:2147483647",
+      "width:min(320px,calc(100vw - 32px))",
+      "padding:12px",
+      "background:#0f172a",
+      "color:#f8fafc",
+      "font-size:13px",
+      "line-height:1.45",
+      "border-radius:8px",
+      "box-shadow:0 12px 32px rgba(0,0,0,.28)",
+      "font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+      "box-sizing:border-box",
+    ].join(";");
+
+    const title = document.createElement("div");
+    title.textContent = "脚本有新版";
+    title.style.cssText = "font-weight:700;margin-bottom:4px;";
+
+    const body = document.createElement("div");
+    body.textContent = `发现 v${version}，当前 v${SCRIPT_VERSION}。`;
+    body.style.cssText = "color:#cbd5e1;margin-bottom:10px;";
+
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:8px;";
+
+    const makeNoticeButton = (label, bg) => {
+      const button = document.createElement("button");
+      button.textContent = label;
+      button.style.cssText = [
+        "flex:1",
+        "border:0",
+        "border-radius:6px",
+        "padding:7px 8px",
+        "cursor:pointer",
+        `background:${bg}`,
+        "color:white",
+        "font-weight:600",
+      ].join(";");
+      return button;
+    };
+
+    const openButton = makeNoticeButton("打开更新", "#2563eb");
+    openButton.addEventListener("click", () => {
+      const tab = window.open(UPDATE_URL, "_blank");
+      if (tab) {
+        tab.opener = null;
+      } else {
+        window.location.href = UPDATE_URL;
+      }
+    });
+
+    const laterButton = makeNoticeButton("稍后", "#475569");
+    laterButton.addEventListener("click", () => {
+      saveState({ updateSnoozeUntil: Date.now() + CONFIG.updateSnoozeMs });
+      hideUpdateNotice();
+    });
+
+    actions.append(openButton, laterButton);
+    notice.append(title, body, actions);
+    document.documentElement.append(notice);
+  }
+
+  async function checkForScriptUpdate(options = {}) {
+    if (window.top !== window || updateCheckBusy) return;
+
+    const force = options.force === true;
+    const state = loadState();
+    const lastCheckAt = Number(state.lastUpdateCheckAt || 0);
+    if (!force && Date.now() - lastCheckAt < CONFIG.updateCheckIntervalMs) {
+      if (
+        state.availableUpdateVersion &&
+        compareVersions(state.availableUpdateVersion, SCRIPT_VERSION) > 0
+      ) {
+        showUpdateNotice(state.availableUpdateVersion);
+      }
+      return;
+    }
+
+    updateCheckBusy = true;
+    saveState({ lastUpdateCheckAt: Date.now() });
+
+    try {
+      const source = await requestText(UPDATE_URL);
+      const remoteVersion = parseScriptVersion(source);
+      if (!remoteVersion) throw new Error("没有读到远端版本号");
+
+      if (compareVersions(remoteVersion, SCRIPT_VERSION) > 0) {
+        const previousAvailableVersion = state.availableUpdateVersion || "";
+        saveState({
+          availableUpdateVersion: remoteVersion,
+          updateSnoozeUntil:
+            previousAvailableVersion === remoteVersion ? state.updateSnoozeUntil || 0 : 0,
+          lastUpdateCheckError: "",
+        });
+        showUpdateNotice(remoteVersion, { force });
+        if (force) setStatus(`发现新版 v${remoteVersion}，请点更新提示里的“打开更新”。`);
+        return;
+      }
+
+      saveState({
+        availableUpdateVersion: "",
+        updateSnoozeUntil: 0,
+        lastUpdateCheckError: "",
+      });
+      hideUpdateNotice();
+      if (force) setStatus(`当前已是最新版 v${SCRIPT_VERSION}。`);
+    } catch (error) {
+      saveState({ lastUpdateCheckError: error?.message || String(error) });
+      if (force) setStatus(`更新检查失败：${error?.message || error}`);
+    } finally {
+      updateCheckBusy = false;
+    }
   }
 
   function isVisible(el) {
@@ -452,6 +654,11 @@
       makeButton("暂停", "#ca8a04", () => {
         saveState({ running: false });
         setStatus("已暂停。");
+      }),
+      makeButton("更新", "#2563eb", () => {
+        saveState({ lastUpdateCheckAt: 0, updateSnoozeUntil: 0 });
+        setStatus("正在检查脚本更新。");
+        void checkForScriptUpdate({ force: true });
       }),
       makeButton("停止", "#dc2626", () => {
         localStorage.removeItem(STORE_KEY);
@@ -864,6 +1071,48 @@
     }
   }
 
+  function hasStudyContentIframe() {
+    return [...document.querySelectorAll("iframe")]
+      .some((frame) => frame.classList.contains("tab-pane-content-iframe") || frame.src.includes("/studycontent"));
+  }
+
+  function clearStudentLogLoadingRecovery() {
+    if (loadState().studentLogLoading) {
+      saveState({ studentLogLoading: null });
+    }
+  }
+
+  async function waitForStudentLogLoading(reason) {
+    const nowMs = Date.now();
+    const current = loadState().studentLogLoading || { startedAt: nowMs, refreshes: 0 };
+    if (!loadState().studentLogLoading) {
+      saveState({ studentLogLoading: current });
+    }
+
+    const elapsed = nowMs - (current.startedAt || nowMs);
+    if (elapsed >= CONFIG.studentLogStuckRefreshMs) {
+      const refreshes = Number(current.refreshes || 0);
+      if (refreshes >= CONFIG.studentLogRefreshMax) {
+        saveState({ running: false, studentLogLoading: null });
+        setStatus("学习内容主页面多次自动刷新仍未加载 iframe，已暂停，请手动刷新页面。");
+        return true;
+      }
+
+      saveState({
+        studentLogLoading: {
+          startedAt: nowMs,
+          refreshes: refreshes + 1,
+        },
+      });
+      refreshPage(`学习内容主页面加载卡住超过 ${Math.round(CONFIG.studentLogStuckRefreshMs / 1000)} 秒`);
+      return true;
+    }
+
+    setStatus(`${reason}，已等待 ${Math.ceil(elapsed / 1000)} 秒。`);
+    await sleep(2500);
+    return true;
+  }
+
   async function handleDetailIdleRecovery() {
     if (!location.pathname.includes("/studentCards/") || getReaderRoot()) return false;
 
@@ -1018,6 +1267,7 @@
       return true;
     }
 
+    clearStudentLogLoadingRecovery();
     const allItems = [...document.querySelectorAll(".item")].filter(isVisible);
     const row = findNextActivityRow();
     if (!row) {
@@ -1048,15 +1298,21 @@
 
   async function ensureStudyContentTab() {
     if (!location.pathname.includes("/studentLog/")) return false;
+
+    if (hasStudyContentIframe()) {
+      clearStudentLogLoadingRecovery();
+      setStatus("学习内容框架已加载，等待列表处理。");
+      await sleep(1500);
+      return true;
+    }
+
     const contentTab = findTextElement("学习内容", { exact: true });
     if (contentTab) {
-      setStatus("切到学习内容。");
       fireClick(contentTab);
-      await sleep(2500);
+      return waitForStudentLogLoading("切到学习内容后等待列表框架加载");
     } else {
-      setStatus("等待学习内容页加载。");
+      return waitForStudentLogLoading("等待学习内容页加载");
     }
-    return true;
   }
 
   async function tick() {
@@ -1104,6 +1360,12 @@
   if (panelStatus) {
     panelStatus.textContent = loadState().status || "待开始";
   }
+
+  void checkForScriptUpdate();
+
+  setInterval(() => {
+    void checkForScriptUpdate();
+  }, CONFIG.updateCheckIntervalMs);
 
   setInterval(() => {
     void tick();
