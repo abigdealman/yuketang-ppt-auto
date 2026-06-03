@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.5
+// @version      0.2.6
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
@@ -17,7 +17,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.5";
+  const SCRIPT_VERSION = "0.2.6";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -219,21 +219,40 @@
   function requestText(url) {
     return new Promise((resolve, reject) => {
       const finalUrl = cacheBustedUrl(url);
-      if (typeof GM_xmlhttpRequest === "function") {
-        GM_xmlhttpRequest({
-          method: "GET",
-          url: finalUrl,
-          timeout: 15000,
-          onload: (response) => {
-            if (response.status >= 200 && response.status < 300) {
-              resolve(response.responseText || "");
-              return;
-            }
-            reject(new Error(`HTTP ${response.status}`));
-          },
-          onerror: () => reject(new Error("网络请求失败")),
-          ontimeout: () => reject(new Error("更新检查超时")),
-        });
+
+      const handleResponse = (response) => {
+        if (response.status >= 200 && response.status < 300) {
+          resolve(response.responseText || response.response || "");
+          return;
+        }
+        reject(new Error(`HTTP ${response.status}`));
+      };
+
+      const requestOptions = {
+        method: "GET",
+        url: finalUrl,
+        timeout: 15000,
+        onload: handleResponse,
+        onerror: () => reject(new Error("网络请求失败")),
+        ontimeout: () => reject(new Error("更新检查超时")),
+      };
+
+      try {
+        if (typeof GM_xmlhttpRequest === "function") {
+          GM_xmlhttpRequest(requestOptions);
+          return;
+        }
+
+        if (typeof GM !== "undefined" && typeof GM.xmlHttpRequest === "function") {
+          GM.xmlHttpRequest({
+            method: "GET",
+            url: finalUrl,
+            timeout: 15000,
+          }).then(handleResponse, () => reject(new Error("网络请求失败")));
+          return;
+        }
+      } catch (error) {
+        reject(error);
         return;
       }
 
@@ -244,6 +263,27 @@
         })
         .then(resolve, reject);
     });
+  }
+
+  function appendFloatingNode(node) {
+    (document.documentElement || document.body || document).append(node);
+  }
+
+  function openUpdateUrl() {
+    try {
+      const tab = window.open(UPDATE_URL, "_blank");
+      if (tab) {
+        try {
+          tab.opener = null;
+        } catch {
+          // Cross-origin WindowProxy can reject opener changes in some browsers.
+        }
+        return;
+      }
+    } catch {
+      // Fall back to same-tab navigation below.
+    }
+    window.location.href = UPDATE_URL;
   }
 
   function hideUpdateNotice() {
@@ -311,12 +351,7 @@
 
     const openButton = makeNoticeButton("打开更新", "#2563eb");
     openButton.addEventListener("click", () => {
-      const tab = window.open(UPDATE_URL, "_blank");
-      if (tab) {
-        tab.opener = null;
-      } else {
-        window.location.href = UPDATE_URL;
-      }
+      openUpdateUrl();
     });
 
     const laterButton = makeNoticeButton("稍后", "#475569");
@@ -327,7 +362,7 @@
 
     actions.append(openButton, laterButton);
     notice.append(title, body, actions);
-    document.documentElement.append(notice);
+    appendFloatingNode(notice);
   }
 
   async function checkForScriptUpdate(options = {}) {
@@ -734,7 +769,8 @@
     makeDraggable(ball, ball, saveSharedPosition);
 
     panel.append(header, panelStatus, controls, hint);
-    document.documentElement.append(panel, ball);
+    appendFloatingNode(panel);
+    appendFloatingNode(ball);
 
     const ui = loadUiState();
     const initialSize = applyPanelSize(ui.size);
@@ -1361,7 +1397,9 @@
     panelStatus.textContent = loadState().status || "待开始";
   }
 
-  void checkForScriptUpdate();
+  window.setTimeout(() => {
+    void checkForScriptUpdate();
+  }, 2000);
 
   setInterval(() => {
     void checkForScriptUpdate();
