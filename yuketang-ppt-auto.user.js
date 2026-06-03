@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.10
+// @version      0.2.11
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @exclude      https://www.yuketang.cn/ai-workspace/*
@@ -18,7 +18,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.10";
+  const SCRIPT_VERSION = "0.2.11";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -99,10 +99,35 @@
     return loadState().running === true;
   }
 
+  function lockRootElement() {
+    try {
+      return window.top?.document?.documentElement || document.documentElement;
+    } catch {
+      return document.documentElement;
+    }
+  }
+
+  function ownsDomRunLock(nowMs) {
+    const root = lockRootElement();
+    if (!root) return true;
+
+    const raw = root.getAttribute("data-codex-ykt-ppt-auto-run-lock") || "";
+    const [owner, expiresAt] = raw.split("|");
+    if (owner && owner !== INSTANCE_ID && Number(expiresAt || 0) > nowMs) {
+      return false;
+    }
+
+    root.setAttribute("data-codex-ykt-ppt-auto-run-lock", `${INSTANCE_ID}|${nowMs + CONFIG.runLockTtlMs}`);
+    root.setAttribute("data-codex-ykt-ppt-auto-version", SCRIPT_VERSION);
+    return true;
+  }
+
   function ownsRunLock() {
     const state = loadState();
     const lock = state.runLock || {};
     const nowMs = Date.now();
+    if (!ownsDomRunLock(nowMs)) return false;
+
     if (lock.owner && lock.owner !== INSTANCE_ID && Number(lock.expiresAt || 0) > nowMs) {
       return false;
     }
@@ -173,10 +198,13 @@
   function markActivityHandled(reason, options = {}) {
     const title = currentActivityTitle();
     if (!title) return false;
-    const next = [...handledActivities(), title];
-    const patch = { handledActivities: next, lastHandledReason: reason };
+    const nextHandled = handledActivities();
+    nextHandled.add(title);
+    const patch = { handledActivities: [...nextHandled], lastHandledReason: reason };
     if (options.defer) {
-      patch.deferredActivities = [...deferredActivities(), title];
+      const nextDeferred = deferredActivities();
+      nextDeferred.add(title);
+      patch.deferredActivities = [...nextDeferred];
     }
     saveState(patch);
     setStatus(`${title} 本轮已处理${reason ? `：${reason}` : ""}，返回列表。`);
@@ -654,7 +682,7 @@
     ].join(";");
 
     const title = document.createElement("div");
-    title.textContent = "雨课堂 PPT 自动阅读";
+    title.textContent = `雨课堂 PPT 自动阅读 v${SCRIPT_VERSION}`;
     title.style.cssText = "font-weight:700;flex:1;";
 
     const collapseButton = document.createElement("button");
@@ -1325,7 +1353,7 @@
 
   function shouldSkipHandledRow(row) {
     const title = activityKey(titleFromRow(row));
-    return deferredActivities().has(title);
+    return handledActivities().has(title) || deferredActivities().has(title);
   }
 
   function findNextActivityRow() {
