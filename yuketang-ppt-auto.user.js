@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.12
+// @version      0.2.13
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @exclude      https://www.yuketang.cn/ai-workspace/*
@@ -18,7 +18,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.12";
+  const SCRIPT_VERSION = "0.2.13";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -91,12 +91,19 @@
 
   function saveState(patch) {
     const next = { ...loadState(), ...patch };
-    localStorage.setItem(STORE_KEY, JSON.stringify(next));
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(next));
+    } catch {
+      // Keep the cross-frame DOM state below even if sandbox storage is unavailable.
+    }
+    writeSharedState(patch);
     return next;
   }
 
   function isRunning() {
-    return loadState().running === true;
+    const sharedRunning = readSharedRunning();
+    if (sharedRunning === false) return false;
+    return loadState().running === true || sharedRunning === true;
   }
 
   function lockRootElement() {
@@ -105,6 +112,40 @@
     } catch {
       return document.documentElement;
     }
+  }
+
+  function writeSharedState(patch) {
+    const root = lockRootElement();
+    if (!root) return;
+
+    if (Object.prototype.hasOwnProperty.call(patch, "status")) {
+      root.setAttribute("data-codex-ykt-ppt-auto-status", String(patch.status || ""));
+      root.setAttribute("data-codex-ykt-ppt-auto-status-at", String(Date.now()));
+      root.setAttribute("data-codex-ykt-ppt-auto-version", SCRIPT_VERSION);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, "running")) {
+      root.setAttribute("data-codex-ykt-ppt-auto-running", patch.running === true ? "true" : "false");
+      root.setAttribute("data-codex-ykt-ppt-auto-running-at", String(Date.now()));
+      root.setAttribute("data-codex-ykt-ppt-auto-version", SCRIPT_VERSION);
+    }
+  }
+
+  function readSharedStatus() {
+    return lockRootElement()?.getAttribute("data-codex-ykt-ppt-auto-status") || "";
+  }
+
+  function readSharedRunning() {
+    const value = lockRootElement()?.getAttribute("data-codex-ykt-ppt-auto-running");
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return null;
+  }
+
+  function syncPanelStatus() {
+    if (!panelStatus) return;
+    const status = readSharedStatus() || loadState().status || "待开始";
+    panelStatus.textContent = status;
   }
 
   function ownsDomRunLock(nowMs) {
@@ -763,6 +804,7 @@
       }),
       makeButton("停止", "#dc2626", () => {
         localStorage.removeItem(STORE_KEY);
+        writeSharedState({ running: false });
         setStatus("已停止并清空状态。");
       }),
     );
@@ -1439,8 +1481,7 @@
     if (window.top === window && location.pathname.includes("/studentLog/")) {
       if (hasVisibleStudyContentIframe()) {
         clearStudentLogLoadingRecovery();
-        const status = loadState().status;
-        if (panelStatus && status) panelStatus.textContent = status;
+        syncPanelStatus();
         return;
       }
 
@@ -1496,7 +1537,7 @@
   createPanel();
 
   if (panelStatus) {
-    panelStatus.textContent = loadState().status || "待开始";
+    syncPanelStatus();
   }
 
   window.setTimeout(() => {
@@ -1508,6 +1549,7 @@
   }, CONFIG.updateCheckIntervalMs);
 
   setInterval(() => {
+    syncPanelStatus();
     void tick();
   }, CONFIG.tickMs);
 
