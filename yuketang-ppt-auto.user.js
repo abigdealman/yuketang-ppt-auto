@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.2
+// @version      0.2.3
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
@@ -33,13 +33,16 @@
     listLoadStuckRefreshMs: 30000,
     listLoadRefreshMax: 2,
     refreshDelayMs: 600,
-    maxSameProgressOpenAttempts: 3,
+    detailIdleRefreshMs: 30000,
+    detailIdleRefreshMax: 2,
+    runLockTtlMs: 5000,
   };
 
   let busy = false;
   let panelStatus;
   let detailWaitKey = "";
   let detailWaitCount = 0;
+  const INSTANCE_ID = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
   const skippedUnreadPages = new Set();
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -84,6 +87,23 @@
 
   function isRunning() {
     return loadState().running === true;
+  }
+
+  function ownsRunLock() {
+    const state = loadState();
+    const lock = state.runLock || {};
+    const nowMs = Date.now();
+    if (lock.owner && lock.owner !== INSTANCE_ID && Number(lock.expiresAt || 0) > nowMs) {
+      return false;
+    }
+
+    saveState({
+      runLock: {
+        owner: INSTANCE_ID,
+        expiresAt: nowMs + CONFIG.runLockTtlMs,
+      },
+    });
+    return true;
   }
 
   function refreshPage(reason) {
@@ -726,6 +746,7 @@
     const button = findTextElement("查看课件", { exact: true });
     if (button) {
       setStatus("打开课件阅读器。");
+      saveState({ detailIdle: null });
       fireClick(button);
       await sleep(CONFIG.openCoursewareWaitMs);
       return true;
@@ -776,7 +797,7 @@
 
   function clearReturnRecoveryIfArrived() {
     if (!loadState().returningFromCards || !isStudyContentLocation()) return;
-    saveState({ returningFromCards: null });
+    saveState({ returningFromCards: null, detailIdle: null });
   }
 
   function beginReturnRecovery() {
@@ -841,6 +862,39 @@
     if (loadState().listLoading) {
       saveState({ listLoading: null });
     }
+  }
+
+  async function handleDetailIdleRecovery() {
+    if (!location.pathname.includes("/studentCards/") || getReaderRoot()) return false;
+
+    const state = loadState();
+    const current = state.detailIdle || { url: location.href, startedAt: Date.now(), refreshes: 0 };
+    const samePage = current.url === location.href;
+    const detailIdle = samePage ? current : { url: location.href, startedAt: Date.now(), refreshes: 0 };
+    if (!state.detailIdle || !samePage) {
+      saveState({ detailIdle });
+      return false;
+    }
+
+    const elapsed = Date.now() - Number(detailIdle.startedAt || Date.now());
+    if (elapsed < CONFIG.detailIdleRefreshMs) return false;
+
+    const refreshes = Number(detailIdle.refreshes || 0);
+    if (refreshes >= CONFIG.detailIdleRefreshMax) {
+      saveState({ running: false, detailIdle: null });
+      setStatus("详情页长时间未进入阅读器，多次自动刷新仍失败，已暂停。");
+      return true;
+    }
+
+    saveState({
+      detailIdle: {
+        url: location.href,
+        startedAt: Date.now(),
+        refreshes: refreshes + 1,
+      },
+    });
+    refreshPage(`详情页停留超过 ${Math.round(CONFIG.detailIdleRefreshMs / 1000)} 秒仍未进入阅读器`);
+    return true;
   }
 
   async function waitForStudyContentListLoading() {
@@ -943,17 +997,6 @@
     return deferredActivities().has(title);
   }
 
-  function rememberOpenAttempt(title, statusText) {
-    const state = loadState();
-    const history = { ...(state.openingHistory || {}) };
-    const key = activityKey(title);
-    const previous = history[key] || {};
-    const attempts = previous.statusText === statusText ? Number(previous.attempts || 0) + 1 : 1;
-    history[key] = { statusText, attempts, lastAt: Date.now() };
-    saveState({ openingHistory: history });
-    return attempts;
-  }
-
   function findNextActivityRow() {
     const statuses = [...document.querySelectorAll(".item")]
       .filter(isVisible)
@@ -984,7 +1027,7 @@
       }
 
       clearListLoadingRecovery();
-      saveState({ returningFromCards: null });
+      saveState({ returningFromCards: null, detailIdle: null });
       saveState({ running: false });
       const skippedCount = [...document.querySelectorAll(".leaf-detail")]
         .filter(isVisible)
@@ -994,16 +1037,8 @@
     }
 
     clearListLoadingRecovery();
-    saveState({ returningFromCards: null });
+    saveState({ returningFromCards: null, detailIdle: null });
     const title = titleFromRow(row);
-    const statusText = textOf(row.querySelector(".item")) || rowProgressFromText(textOf(row))?.raw || textOf(row).slice(-40);
-    const attempts = rememberOpenAttempt(title, statusText);
-    if (attempts > CONFIG.maxSameProgressOpenAttempts) {
-      saveState({ running: false });
-      setStatus(`${title} 多次打开后列表进度仍为 ${statusText}，已暂停，避免死循环。`);
-      return true;
-    }
-
     saveState({ lastActivity: title });
     setStatus(`打开活动：${title}`);
     fireClick(row);
@@ -1026,6 +1061,7 @@
 
   async function tick() {
     if (busy || !isRunning()) return;
+    if (!ownsRunLock()) return;
     busy = true;
 
     try {
@@ -1036,8 +1072,10 @@
       }
 
       if (await handleReturnRecovery()) return;
+      if (await handleDetailIdleRecovery()) return;
 
       if (getReaderRoot()) {
+        if (loadState().detailIdle) saveState({ detailIdle: null });
         if (await processReader()) return;
       }
 
