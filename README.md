@@ -14,7 +14,7 @@
 ## 使用
 
 1. 安装 Tampermonkey。
-2. 新建脚本，粘贴 `outputs/yuketang-ppt-auto.user.js` 的内容。
+2. 新建脚本，粘贴 `yuketang-ppt-auto.user.js` 的内容。
 3. 打开雨课堂课程的学习内容页面。
 4. 点击右侧面板里的“开始”。
 
