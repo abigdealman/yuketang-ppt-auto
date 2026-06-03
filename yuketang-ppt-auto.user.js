@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.9
+// @version      0.2.10
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
+// @exclude      https://www.yuketang.cn/ai-workspace/*
 // @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
 // @downloadURL  https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
 // @run-at       document-idle
@@ -17,7 +18,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.9";
+  const SCRIPT_VERSION = "0.2.10";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -1071,6 +1072,10 @@
     return location.pathname.includes("/studentLog/") || location.pathname.includes("/studycontent");
   }
 
+  function isAutomationFrame() {
+    return window.top === window || location.pathname.includes("/studycontent");
+  }
+
   function clearReturnRecoveryIfArrived() {
     if (!loadState().returningFromCards || !isStudyContentLocation()) return;
     saveState({ returningFromCards: null, detailIdle: null });
@@ -1396,6 +1401,7 @@
 
   async function tick() {
     if (busy || !isRunning()) return;
+    if (!isAutomationFrame()) return;
 
     if (window.top === window && location.pathname.includes("/studentLog/")) {
       if (hasVisibleStudyContentIframe()) {
@@ -1424,10 +1430,6 @@
     try {
       clearReturnRecoveryIfArrived();
 
-      if (window.top !== window && !location.pathname.includes("/studycontent")) {
-        return;
-      }
-
       if (await handleReturnRecovery()) return;
       if (await handleDetailIdleRecovery()) return;
 
@@ -1455,6 +1457,8 @@
       busy = false;
     }
   }
+
+  if (!isAutomationFrame()) return;
 
   createPanel();
 
