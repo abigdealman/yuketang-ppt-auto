@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.7
+// @version      0.2.8
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
@@ -17,7 +17,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.7";
+  const SCRIPT_VERSION = "0.2.8";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -1124,8 +1124,16 @@
   }
 
   function hasStudyContentIframe() {
+    return studyContentIframes().length > 0;
+  }
+
+  function studyContentIframes() {
     return [...document.querySelectorAll("iframe")]
-      .some((frame) => frame.classList.contains("tab-pane-content-iframe") || frame.src.includes("/studycontent"));
+      .filter((frame) => frame.classList.contains("tab-pane-content-iframe") || frame.src.includes("/studycontent"));
+  }
+
+  function hasVisibleStudyContentIframe() {
+    return studyContentIframes().some(isVisible);
   }
 
   function clearStudentLogLoadingRecovery() {
@@ -1351,7 +1359,7 @@
   async function ensureStudyContentTab() {
     if (!location.pathname.includes("/studentLog/")) return false;
 
-    if (hasStudyContentIframe()) {
+    if (hasVisibleStudyContentIframe()) {
       clearStudentLogLoadingRecovery();
       setStatus("学习内容框架已加载，等待列表处理。");
       await sleep(1500);
@@ -1362,6 +1370,8 @@
     if (contentTab) {
       fireClick(contentTab);
       return waitForStudentLogLoading("切到学习内容后等待列表框架加载");
+    } else if (hasStudyContentIframe()) {
+      return waitForStudentLogLoading("学习内容框架存在但未显示，等待切换或刷新恢复");
     } else {
       return waitForStudentLogLoading("等待学习内容页加载");
     }
@@ -1369,6 +1379,18 @@
 
   async function tick() {
     if (busy || !isRunning()) return;
+
+    if (
+      window.top === window &&
+      location.pathname.includes("/studentLog/") &&
+      hasVisibleStudyContentIframe()
+    ) {
+      clearStudentLogLoadingRecovery();
+      const status = loadState().status;
+      if (panelStatus && status) panelStatus.textContent = status;
+      return;
+    }
+
     if (!ownsRunLock()) return;
     busy = true;
 
