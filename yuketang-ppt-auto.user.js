@@ -2,7 +2,7 @@
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
 // @version      0.2.2
-// @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
+// @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。TEXT
 // @match        https://www.yuketang.cn/*
 // @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
 // @downloadURL  https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
