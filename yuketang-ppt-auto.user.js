@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.15
+// @version      0.2.16
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @exclude      https://www.yuketang.cn/ai-workspace/*
@@ -18,7 +18,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.15";
+  const SCRIPT_VERSION = "0.2.16";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -928,6 +928,9 @@
 
   function getReaderRoot() {
     return document.querySelector(".basePPTDialog") ||
+      document.querySelector(".basePPT__component--inline") ||
+      document.querySelector(".basePPTMain.basePPTInline") ||
+      document.querySelector(".studentCoursewarePPT__component") ||
       [...document.querySelectorAll(".el-dialog")].find((el) => textOf(el).includes("大纲 共")) ||
       null;
   }
