@@ -21,7 +21,7 @@
 1. 安装 Tampermonkey。
 2. 打开下面的 Raw 地址安装脚本：
 
-   `https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js`
+   `https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js`
 
 3. 打开雨课堂课程页面。
 4. 点击右侧面板里的“开始”。

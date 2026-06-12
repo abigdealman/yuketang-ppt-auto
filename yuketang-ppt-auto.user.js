@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.18
+// @version      0.2.19
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @exclude      https://www.yuketang.cn/ai-workspace/*
-// @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
-// @downloadURL  https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js
+// @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js
+// @downloadURL  https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js
 // @run-at       document-idle
 // @connect      gh-proxy.com
 // @connect      raw.githubusercontent.com
@@ -18,8 +18,8 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.18";
-  const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
+  const SCRIPT_VERSION = "0.2.19";
+  const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
     updateCheckIntervalMs: 5 * 60 * 1000,
