@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.16
+// @version      0.2.17
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @exclude      https://www.yuketang.cn/ai-workspace/*
@@ -18,7 +18,7 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.16";
+  const SCRIPT_VERSION = "0.2.17";
   const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/refs/heads/main/yuketang-ppt-auto.user.js";
   const CONFIG = {
     tickMs: 900,
@@ -580,6 +580,43 @@
       }
     }
     return dispatched;
+  }
+
+  function unreadReturnDialog() {
+    const dialogs = [
+      ...document.querySelectorAll(".prepareDialog, .el-message-box, .el-dialog, [role='dialog']"),
+    ].filter(isVisible);
+
+    return dialogs.find((dialog) => {
+      const text = textOf(dialog);
+      return text.includes("继续观看") &&
+        text.includes("未观看") &&
+        (text.includes("没有好好学习") || text.includes("以下页面"));
+    }) || null;
+  }
+
+  function clickDialogAction(dialog, label) {
+    const target = findTextElement(label, { exact: true, root: dialog });
+    const clickTarget = target?.closest?.("button, a, [role='button']") || target;
+    return fireClick(clickTarget);
+  }
+
+  async function handleUnreadReturnDialog() {
+    const dialog = unreadReturnDialog();
+    if (!dialog) return false;
+
+    saveState({ returningFromCards: null, detailIdle: null });
+    const clicked = clickDialogAction(dialog, "继续观看");
+    if (!clicked) {
+      saveState({ running: false });
+      setStatus("检测到未观看页面提示，但未能自动点击继续观看，已暂停，请手动处理。");
+      return true;
+    }
+
+    setStatus("检测到未观看页面提示，已继续观看并恢复处理未读页。");
+    await sleep(1200);
+    queueTick(300);
+    return true;
   }
 
   function createPanel() {
@@ -1178,6 +1215,8 @@
     const returning = loadState().returningFromCards;
     if (!returning) return false;
 
+    if (await handleUnreadReturnDialog()) return true;
+
     if (isStudyContentLocation()) {
       saveState({ returningFromCards: null });
       return false;
@@ -1353,6 +1392,8 @@
     } else {
       history.back();
     }
+    await sleep(900);
+    if (await handleUnreadReturnDialog()) return;
     await sleep(CONFIG.returnWaitMs);
   }
 
@@ -1536,6 +1577,8 @@
     busy = true;
 
     try {
+      if (await handleUnreadReturnDialog()) return;
+
       clearReturnRecoveryIfArrived();
 
       if (await handleReturnRecovery()) return;
