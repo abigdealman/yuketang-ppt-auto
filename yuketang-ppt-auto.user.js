@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         雨课堂 PPT 自动阅读助手
 // @namespace    codex-yuketang-ppt-auto
-// @version      0.2.20
+// @version      0.2.21
 // @description  自动按顺序打开雨课堂 PPT，并等待每页从未读变为已读后再继续。
 // @match        https://www.yuketang.cn/*
 // @exclude      https://www.yuketang.cn/ai-workspace/*
-// @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js?v=0.2.20
-// @downloadURL  https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js?v=0.2.20
+// @updateURL    https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js?v=0.2.21
+// @downloadURL  https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js?v=0.2.21
 // @run-at       document-idle
 // @connect      gh-proxy.com
 // @connect      raw.githubusercontent.com
@@ -18,8 +18,8 @@
 
   const STORE_KEY = "codex:yuketang:ppt-auto";
   const UI_STORE_KEY = `${STORE_KEY}:ui`;
-  const SCRIPT_VERSION = "0.2.20";
-  const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js?v=0.2.20";
+  const SCRIPT_VERSION = "0.2.21";
+  const UPDATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js?v=0.2.21";
   const CONFIG = {
     tickMs: 900,
     updateCheckIntervalMs: 5 * 60 * 1000,
@@ -37,6 +37,8 @@
     returnStuckRefreshMs: 30000,
     returnRetryClickMs: 10000,
     returnRefreshMax: 3,
+    unreadReturnPromptContinueMax: 1,
+    unreadReturnPromptExitMax: 3,
     listLoadStuckRefreshMs: 30000,
     listLoadRefreshMax: 2,
     studentLogStuckRefreshMs: 30000,
@@ -228,6 +230,11 @@
 
   function deferredActivities() {
     return new Set((loadState().deferredActivities || []).map(activityKey));
+  }
+
+  function currentActivityIsDeferred() {
+    const title = currentActivityTitle();
+    return title ? deferredActivities().has(title) : false;
   }
 
   function currentActivityTitle() {
@@ -596,6 +603,30 @@
     }) || null;
   }
 
+  function unreadReturnDialogPages(dialog) {
+    const text = textOf(dialog).split("退出")[0] || "";
+    return [...text.matchAll(/\d+/g)]
+      .map((match) => Number(match[0]))
+      .filter((page) => Number.isFinite(page) && page > 0);
+  }
+
+  function unreadReturnPromptKey(dialog) {
+    const pages = unreadReturnDialogPages(dialog);
+    const pagePart = pages.length ? pages.join(",") : textOf(dialog).slice(0, 120);
+    return `${location.pathname}|${currentActivityTitle()}|${pagePart}`;
+  }
+
+  function shouldExitUnreadReturnDialog() {
+    const lastReason = String(loadState().lastHandledReason || "");
+    const skippedCount = skippedPageCountInCurrentActivity();
+    const readableUnreadCount = getUnreadFlags().length;
+    const skippedQuestionReason = /题目页|习题页/.test(lastReason);
+
+    return currentActivityIsDeferred() &&
+      readableUnreadCount === 0 &&
+      (skippedCount > 0 || skippedQuestionReason);
+  }
+
   function clickDialogAction(dialog, label) {
     const target = findTextElement(label, { exact: true, root: dialog });
     const clickTarget = target?.closest?.("button, a, [role='button']") || target;
@@ -606,6 +637,50 @@
     const dialog = unreadReturnDialog();
     if (!dialog) return false;
 
+    const pages = unreadReturnDialogPages(dialog);
+    const pageLabel = pages.length ? `（${pages.join("、")}）` : "";
+    const promptKey = unreadReturnPromptKey(dialog);
+    const previousPrompt = loadState().unreadReturnPrompt || {};
+    const promptCount = previousPrompt.key === promptKey
+      ? Number(previousPrompt.count || 0) + 1
+      : 1;
+
+    saveState({
+      unreadReturnPrompt: {
+        key: promptKey,
+        count: promptCount,
+        pages,
+        at: Date.now(),
+      },
+    });
+
+    if (shouldExitUnreadReturnDialog()) {
+      if (promptCount > CONFIG.unreadReturnPromptExitMax) {
+        saveState({ running: false, returningFromCards: null, detailIdle: null });
+        setStatus(`未观看提示${pageLabel}已多次尝试退出仍未消失，已暂停，避免退出死循环。`);
+        return true;
+      }
+
+      beginReturnRecovery();
+      const clicked = clickDialogAction(dialog, "退出");
+      if (!clicked) {
+        saveState({ running: false, returningFromCards: null });
+        setStatus("检测到未观看页面提示，且剩余页已判定为题目页，但未能自动点击退出，已暂停，请手动处理。");
+        return true;
+      }
+
+      setStatus(`未观看提示${pageLabel}对应已跳过题目页，已点击退出并返回列表，避免反复进入。`);
+      await sleep(CONFIG.returnWaitMs);
+      queueTick(300);
+      return true;
+    }
+
+    if (promptCount > CONFIG.unreadReturnPromptContinueMax) {
+      saveState({ running: false, returningFromCards: null, detailIdle: null });
+      setStatus(`未观看提示${pageLabel}重复出现，已暂停，避免继续观看/返回死循环；请手动确认这些页是否为题目页或网络未记录。`);
+      return true;
+    }
+
     saveState({ returningFromCards: null, detailIdle: null });
     const clicked = clickDialogAction(dialog, "继续观看");
     if (!clicked) {
@@ -614,7 +689,7 @@
       return true;
     }
 
-    setStatus("检测到未观看页面提示，已继续观看并恢复处理未读页。");
+    setStatus(`检测到未观看页面提示${pageLabel}，已继续观看并恢复处理未读页。`);
     await sleep(1200);
     queueTick(300);
     return true;
@@ -825,6 +900,7 @@
           detailIdle: null,
           listLoading: null,
           studentLogLoading: null,
+          unreadReturnPrompt: null,
           refreshRecovery: {},
           handledActivities: [],
           deferredActivities: [],
@@ -1195,7 +1271,7 @@
 
   function clearReturnRecoveryIfArrived() {
     if (!loadState().returningFromCards || !isStudyContentLocation()) return;
-    saveState({ returningFromCards: null, detailIdle: null });
+    saveState({ returningFromCards: null, detailIdle: null, unreadReturnPrompt: null });
   }
 
   function beginReturnRecovery() {

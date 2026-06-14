@@ -11,7 +11,7 @@
 - PPT 内题目页不会自动作答，只会按跳过处理，避免卡住。
 - 每页会等待“未读”状态消失或学习进度增加后再继续，避免点太快导致仍然未读。
 - “未读”长时间不转已读、返回学习内容卡住、学习内容主页面或列表加载卡住时，会在次数上限内自动刷新恢复。
-- 返回课件时如果出现“还有页面未观看”的提示，会自动点击“继续观看”并恢复处理未读页。
+- 返回课件时如果出现“还有页面未观看”的提示，会按场景继续观看补读，或在剩余页已判定为题目页时退出课件，并限制重复弹窗避免循环。
 - 详情页长时间未进入阅读器时，会自动刷新恢复。
 - 内置运行锁和跨 iframe 状态同步，减少重复安装或多页面脚本实例互相抢控制。
 - 悬浮控制面板支持拖动、收起为悬浮球、调整大小。
@@ -21,7 +21,7 @@
 1. 安装 Tampermonkey。
 2. 打开下面的 Raw 地址安装脚本：
 
-   `https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js?v=0.2.20`
+   `https://gh-proxy.com/https://raw.githubusercontent.com/abigdealman/yuketang-ppt-auto/main/yuketang-ppt-auto.user.js?v=0.2.21`
 
 3. 打开雨课堂课程页面。
 4. 点击右侧面板里的“开始”。
